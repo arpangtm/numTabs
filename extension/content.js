@@ -1,8 +1,8 @@
 /**
  * TabQ - content script (runs in every http/https page)
  * =====================================================
- * Responsibility: draw this tab's assigned number (1..9) as a small badge on
- * the page's favicon - a white circle with a light-blue number in the top-right
+ * Responsibility: draw this tab's assigned number (1..9) as a badge on the
+ * page's favicon - a white circle with a heavy black number in the top-right
  * corner - so it lines up with Chrome's Ctrl/Cmd+1..9 jump shortcuts.
  *
  * The background worker decides *which* number this tab gets. This script owns
@@ -21,11 +21,12 @@
 
   const CANVAS_SIZE = 64; // off-screen render resolution (crisp on hi-DPI tabs)
   const BADGE_BG = "#ffffff"; // the circle fill (white)
-  const BADGE_FG = "#4da6ff"; // the number + thin ring (light blue) - tweak freely
+  const BADGE_FG = "#000000"; // the number + separating ring (black) - tweak freely
 
   /* -------------------------------- state -------------------------------- */
 
   let currentNumber = null; // 1..9, or null when this tab is not in the top 9
+  let initialized = false; // true once initTabQ() has run (avoids early <head> mutation)
   let pageFaviconUrl = null; // the page's real favicon URL (absolute or data:)
   let managing = false; // have we taken control of this tab's favicon yet?
   let renderToken = 0; // bumped per update() so stale async draws are dropped
@@ -51,29 +52,35 @@
 
   /* ------------------------------ rendering ------------------------------ */
 
-  /** Draw the white-circle / light-blue-number badge in the top-right corner. */
+  /** Draw the white-circle / black-number badge in the top-right corner. */
   function drawBadge(ctx, size, number) {
+    // Kept small and tucked hard into the corner so most of the site's icon
+    // stays visible; contrast (not size) is what keeps the number readable.
     const r = size * 0.31; // circle radius
-    const cx = size - r - size * 0.03; // inset slightly so the ring isn't clipped
-    const cy = r + size * 0.03;
+    const cx = size - r; // flush with the right edge
+    const cy = r; // flush with the top edge
 
-    // White circle with a thin light-blue ring (the ring keeps it visible even
-    // on top of a white favicon).
+    // White circle with a black ring. Black-on-white is the highest contrast
+    // possible, and the ring keeps the badge distinct on white favicons.
+    ctx.lineWidth = Math.max(1, size * 0.05);
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r - ctx.lineWidth / 2, 0, Math.PI * 2); // ring stays inside the canvas
     ctx.fillStyle = BADGE_BG;
     ctx.fill();
-    ctx.lineWidth = Math.max(1, size * 0.045);
     ctx.strokeStyle = BADGE_FG;
     ctx.stroke();
 
-    // The number, centred in the circle. Sized to nearly fill the circle while
-    // leaving a thin margin inside the ring.
+    // The number, as heavy as possible and sized to nearly fill the circle.
+    // Centred on its actual glyph bounds (textBaseline "middle" sits a little
+    // high for digits), so it stays optically centred at tiny sizes.
+    const label = String(number);
     ctx.fillStyle = BADGE_FG;
-    ctx.font = `bold ${Math.round(r * 1.75)}px Arial, sans-serif`;
+    ctx.font = `900 ${Math.round(r * 1.75)}px "Arial Black", "Helvetica Neue", Arial, sans-serif`;
     ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(number), cx, cy + size * 0.01);
+    ctx.textBaseline = "alphabetic";
+    const m = ctx.measureText(label);
+    const glyphH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+    ctx.fillText(label, cx, cy + glyphH / 2 - m.actualBoundingBoxDescent);
   }
 
   /** Composite the original favicon + badge and return a PNG data: URL. */
@@ -122,6 +129,9 @@
   function setManagedIcon(href, token) {
     if (!href || token !== renderToken || !document.head) return;
 
+    // Removing the page's own icon links (after hydration is complete) ensures
+    // Chrome unambiguously uses our badged icon. Deferred init keeps this from
+    // racing the page's hydration.
     pageIconLinks().forEach((link) => link.remove());
 
     let link = document.querySelector('link[rel="icon"][data-tabq]');
@@ -141,6 +151,7 @@
    * async fetch or image decode is in flight, the stale result is discarded.
    */
   async function update() {
+    if (!initialized) return; // defer all <head> work until initTabQ()
     const token = ++renderToken;
     const number = currentNumber;
 
@@ -199,6 +210,7 @@
    * That makes this loop-safe without any "ignore my own mutation" flag.
    */
   function onHeadMutation() {
+    if (!initialized) return;
     const links = pageIconLinks();
     if (!links.length) return; // nothing new from the page
 
@@ -252,7 +264,21 @@
 
   // --- init -----------------------------------------------------------------
   // run_at is "document_end", so <head> already exists.
-  pageFaviconUrl = resolveFaviconUrl();
-  startObserver(); // watch for the page changing its own favicon later
-  requestNumber(); // fetch our number, then update() draws the badge
+  //
+  // Defer setup slightly so we don't mutate <head> while an SPA framework
+  // (e.g. SvelteKit on Brave Search) is still hydrating - doing so mid-hydration
+  // can desync its virtual DOM and break the page's styling/layout.
+  function initTabQ() {
+    initialized = true;
+    pageFaviconUrl = resolveFaviconUrl();
+    startObserver(); // watch for the page changing its own favicon later
+    requestNumber(); // fetch our number, then update() draws the badge
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => setTimeout(initTabQ, 1000), {
+      once: true,
+    });
+  } else {
+    setTimeout(initTabQ, 1000);
+  }
 })();

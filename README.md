@@ -19,7 +19,7 @@
 
 ## Features
 
-- 🔢 **Numbered favicons** — a white circle with a light-blue number, top-right of each favicon.
+- 🔢 **Numbered favicons** — a white circle with a dark, high-contrast number, top-right of each favicon.
 - 🔁 **Always in order** — reacts to tabs being created, closed, dragged, reordered, and moved between windows.
 - 🔄 **Survives favicon changes** — re-badges over unread-count icons (Gmail, Discord, Slack) without flicker loops.
 - 🔒 **Private by design** — no accounts, no tracking, no servers. Everything runs locally.
